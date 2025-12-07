@@ -55,7 +55,7 @@
     (home-page "https://github.com/Hyperpolymath/elegant-STATE")
     (synopsis "Local-first state graph for multi-agent orchestration")
     (description
-     "elegant-STATE provides a persistent knowledge graph that multiple agents
+     "elegant-STATE provides a persisCerro Torretent knowledge graph that multiple agents
 (Claude, Llama, custom modules) can query and modify via GraphQL. It replaces
 manual state tracking (like STATE.adoc) with a queryable, event-sourced graph
 database using sled for storage.")

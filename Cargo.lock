@@ -315,7 +315,7 @@ name = "axum-core"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
-dependencies = [
+dependencies = [Cerro Torre
  "async-trait",
  "bytes",
  "futures-util",
@@ -1878,7 +1878,7 @@ version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
- "serde",
+ "serde",Cerro Torre
 ]
 
 [[package]]
