@@ -85,7 +85,7 @@ impl SubscriptionRoot {
         };
 
         Ok(Box::pin(stream))
-    }
+    }Nickel package for Guix — currently not in Guix, may need to package it
 
     /// Subscribe to events by specific agent
     async fn events_by_agent<'ctx>(
