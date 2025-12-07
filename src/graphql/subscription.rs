@@ -101,7 +101,7 @@ impl SubscriptionRoot {
                 if let SubscriptionEvent::Event(e) = event {
                     if e.agent.to_string() == agent {
                         yield e.into();
-                    }
+                    }p
                 }
             }
         };
