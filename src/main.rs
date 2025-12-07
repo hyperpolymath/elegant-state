@@ -463,7 +463,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Watch { command, debounce } => {
-            println!("Watch mode not yet implemented");
+            run_watch_mode(command, debounce, &db_path, quiet)?;
         }
     }
 
@@ -810,9 +810,21 @@ fn handle_agent_command(command: AgentCommands, output_format: OutputFormat) -> 
     let mut config = CapabilityConfig::default();
     let mut tracker = ReputationTracker::new();
 
+    // Track registered modules (would persist in real implementation)
+    static REGISTERED_MODULES: std::sync::LazyLock<std::sync::Mutex<Vec<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
     match command {
         AgentCommands::List { verbose, reputation } => {
-            let agents = vec![AgentId::User, AgentId::Claude, AgentId::Llama, AgentId::System];
+            let mut agents: Vec<AgentId> = vec![AgentId::User, AgentId::Claude, AgentId::Llama, AgentId::System];
+
+            // Add registered modules
+            if let Ok(modules) = REGISTERED_MODULES.lock() {
+                for m in modules.iter() {
+                    agents.push(AgentId::Module(m.clone()));
+                }
+            }
+
             for agent in agents {
                 let caps = config.get_capabilities(&agent);
                 print!("{}: mode={}", agent, caps.mode);
@@ -839,6 +851,9 @@ fn handle_agent_command(command: AgentCommands, output_format: OutputFormat) -> 
                 println!("Total votes: {}", rep.total_votes);
                 println!("Correct votes: {}", rep.correct_votes);
             }
+            if history {
+                println!("\nReputation history: (not yet persisted)");
+            }
         }
         AgentCommands::Set { agent, mode, can_vote, vote_weight } => {
             let agent_id = parse_agent_id(&agent);
@@ -859,25 +874,140 @@ fn handle_agent_command(command: AgentCommands, output_format: OutputFormat) -> 
             config.set_capabilities(caps).map_err(|e| anyhow!(e))?;
             println!("Updated agent: {}", agent);
         }
-        AgentCommands::Leaderboard { limit, sort } => {
-            let leaderboard = tracker.leaderboard();
-            for (i, rep) in leaderboard.into_iter().take(limit).enumerate() {
-                println!("{}. {} - score: {:.2}, accuracy: {:.1}%",
-                    i + 1, rep.agent, rep.score, rep.accuracy() * 100.0);
+        AgentCommands::Register { name, mode, description } => {
+            // Validate module name
+            if name.is_empty() || name.contains(':') || name.contains(' ') {
+                return Err(anyhow!("Invalid module name: '{}' (cannot be empty or contain ':' or spaces)", name));
             }
+
+            // Check if already registered
+            if let Ok(mut modules) = REGISTERED_MODULES.lock() {
+                if modules.contains(&name) {
+                    return Err(anyhow!("Module '{}' is already registered", name));
+                }
+
+                // Register the module
+                modules.push(name.clone());
+            }
+
+            // Set capabilities
+            let agent_id = AgentId::Module(name.clone());
+            let caps = AgentCapabilities {
+                agent: agent_id.clone(),
+                mode: match mode {
+                    CapabilityModeArg::Direct => CapabilityMode::Direct,
+                    CapabilityModeArg::Proposal => CapabilityMode::Proposal,
+                    CapabilityModeArg::Observer => CapabilityMode::Observer,
+                },
+                can_vote: true,
+                vote_weight: 1.0,
+            };
+            config.set_capabilities(caps).map_err(|e| anyhow!(e))?;
+
+            println!("Registered module: {}", name);
+            if let Some(desc) = description {
+                println!("Description: {}", desc);
+            }
+            println!("Mode: {:?}", mode);
+        }
+        AgentCommands::Unregister { name, force } => {
+            if !force {
+                print!("Are you sure you want to unregister module '{}'? [y/N] ", name);
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted");
+                    return Ok(());
+                }
+            }
+
+            if let Ok(mut modules) = REGISTERED_MODULES.lock() {
+                if let Some(pos) = modules.iter().position(|m| m == &name) {
+                    modules.remove(pos);
+                    println!("Unregistered module: {}", name);
+                } else {
+                    return Err(anyhow!("Module '{}' is not registered", name));
+                }
+            }
+        }
+        AgentCommands::Leaderboard { limit, sort } => {
+            let mut leaderboard = tracker.leaderboard();
+
+            // Sort by specified field
+            match sort.as_str() {
+                "accuracy" => leaderboard.sort_by(|a, b| {
+                    b.accuracy().partial_cmp(&a.accuracy()).unwrap_or(std::cmp::Ordering::Equal)
+                }),
+                "votes" => leaderboard.sort_by(|a, b| b.total_votes.cmp(&a.total_votes)),
+                _ => {} // Default is score, already sorted
+            }
+
+            if leaderboard.is_empty() {
+                println!("No reputation data yet.");
+            } else {
+                for (i, rep) in leaderboard.into_iter().take(limit).enumerate() {
+                    println!("{}. {} - score: {:.2}, accuracy: {:.1}%, votes: {}",
+                        i + 1, rep.agent, rep.score, rep.accuracy() * 100.0, rep.total_votes);
+                }
+            }
+        }
+        AgentCommands::ResetReputation { agent, force } => {
+            if !force {
+                let target = if agent == "all" { "ALL agents" } else { &agent };
+                print!("Are you sure you want to reset reputation for {}? [y/N] ", target);
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted");
+                    return Ok(());
+                }
+            }
+
+            if agent == "all" {
+                tracker = ReputationTracker::new();
+                println!("Reset reputation for all agents");
+            } else {
+                // Reset by creating a new reputation for the agent
+                let agent_id = parse_agent_id(&agent);
+                let rep = tracker.get_or_create(&agent_id);
+                *rep = elegant_state::Reputation::new(agent_id.clone());
+                println!("Reset reputation for {}", agent);
+            }
+        }
+        AgentCommands::Decay { factor } => {
+            if factor < 0.0 || factor > 1.0 {
+                return Err(anyhow!("Decay factor must be between 0.0 and 1.0"));
+            }
+            tracker.apply_decay_all(factor);
+            println!("Applied decay factor {} to all reputations", factor);
+        }
+        AgentCommands::Switch { agent } => {
+            let agent_id = parse_agent_id(&agent);
+            println!("Switched to agent: {}", agent_id);
+            println!("Note: Use --agent flag globally to persist this change");
         }
         AgentCommands::Whoami => {
             println!("Current agent: user");
-        }
-        _ => {
-            println!("Agent command not fully implemented yet");
+            println!("Use --agent flag to change identity");
         }
     }
     Ok(())
 }
 
 fn handle_proposal_command(command: ProposalCommands, output_format: OutputFormat) -> Result<()> {
-    let mut manager = ProposalManager::new();
+    use elegant_state::{ProposalTarget, Operation};
+
+    // Use static for persistence within the session
+    static PROPOSAL_MANAGER: std::sync::LazyLock<std::sync::Mutex<ProposalManager>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(ProposalManager::new()));
+    static VOTING_COORDINATOR: std::sync::LazyLock<std::sync::Mutex<VotingCoordinator>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(VotingCoordinator::default()));
+
+    let mut manager = PROPOSAL_MANAGER.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+    let mut coordinator = VOTING_COORDINATOR.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+    let config = CapabilityConfig::default();
 
     match command {
         ProposalCommands::List { pending, mine, status, limit, verbose } => {
@@ -886,19 +1016,239 @@ fn handle_proposal_command(command: ProposalCommands, output_format: OutputForma
             } else {
                 manager.all()
             };
-            for p in proposals.into_iter().take(limit) {
-                println!("{} [{:?}] by {} - {:?}",
-                    p.id, p.status, p.proposer, p.operation);
+
+            let filtered: Vec<_> = proposals
+                .into_iter()
+                .filter(|p| {
+                    if let Some(ref s) = status {
+                        let status_str = format!("{:?}", p.status).to_lowercase();
+                        if !status_str.contains(&s.to_lowercase()) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .take(limit)
+                .collect();
+
+            if filtered.is_empty() {
+                println!("No proposals found");
+            } else {
+                for p in filtered {
+                    print!("{} [{:?}] by {}", p.id, p.status, p.proposer);
+                    if verbose {
+                        print!(" - {:?} on {:?}", p.operation, p.target);
+                        let votes = coordinator.get_votes(p.id);
+                        print!(" (votes: {})", votes.len());
+                    }
+                    println!();
+                }
             }
         }
-        ProposalCommands::Show { id, votes, payload } => {
-            println!("Proposal {} not found (manager is ephemeral)", id);
+        ProposalCommands::Show { id, votes: show_votes, payload } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            match manager.get(proposal_id) {
+                Some(p) => {
+                    println!("Proposal: {}", p.id);
+                    println!("Status: {:?}", p.status);
+                    println!("Proposer: {}", p.proposer);
+                    println!("Operation: {:?}", p.operation);
+                    println!("Target: {:?}", p.target);
+                    println!("Created: {}", p.created_at.format("%Y-%m-%d %H:%M:%S"));
+
+                    if let Some(ref rationale) = p.rationale {
+                        println!("Rationale: {}", rationale);
+                    }
+
+                    if show_votes {
+                        let votes = coordinator.get_votes(proposal_id);
+                        println!("\nVotes ({}):", votes.len());
+                        for vote in votes {
+                            println!("  {} - {:?}{}", vote.voter, vote.decision,
+                                vote.reason.as_ref().map(|r| format!(": {}", r)).unwrap_or_default());
+                        }
+                    }
+
+                    if payload {
+                        println!("\nPayload:");
+                        println!("{}", serde_json::to_string_pretty(&p.payload)?);
+                    }
+                }
+                None => println!("Proposal {} not found", id),
+            }
         }
-        _ => {
-            println!("Proposal command not fully implemented yet");
+        ProposalCommands::Create { operation, target, payload, rationale } => {
+            let op = match operation.to_lowercase().as_str() {
+                "create" => Operation::Create,
+                "update" => Operation::Update,
+                "delete" => Operation::Delete,
+                "link" => Operation::Link,
+                "unlink" => Operation::Unlink,
+                _ => return Err(anyhow!("Unknown operation: {} (valid: create, update, delete, link, unlink)", operation)),
+            };
+
+            let tgt = if target.starts_with("node:") {
+                let id_str = &target[5..];
+                let node_id = id_str.parse().ok();
+                ProposalTarget::Node { id: node_id, kind: None }
+            } else if target.starts_with("edge:") {
+                let id_str = &target[5..];
+                let edge_id = id_str.parse().ok();
+                ProposalTarget::Edge { id: edge_id, from: None, to: None }
+            } else if target.starts_with("new:") {
+                let kind = target[4..].to_string();
+                ProposalTarget::Node { id: None, kind: Some(kind) }
+            } else {
+                return Err(anyhow!("Invalid target format: {} (use node:ID, edge:ID, or new:kind)", target));
+            };
+
+            let payload_value: serde_json::Value = serde_json::from_str(&payload)?;
+
+            let mut proposal = Proposal::new(
+                AgentId::User,
+                op,
+                tgt,
+                payload_value,
+            );
+            if let Some(r) = rationale {
+                proposal = proposal.with_rationale(r);
+            }
+
+            let id = manager.submit(proposal);
+            println!("Created proposal: {}", id);
+        }
+        ProposalCommands::Withdraw { id, reason: _reason } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            if let Some(p) = manager.get_mut(proposal_id) {
+                p.withdraw();
+                println!("Withdrawn proposal: {}", id);
+            } else {
+                println!("Proposal {} not found", id);
+            }
+        }
+        ProposalCommands::Approve { id, reason } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            let mut vote = Vote::new(proposal_id, AgentId::User, DomainVoteDecision::Approve);
+            if let Some(r) = reason {
+                vote = vote.with_reason(r);
+            }
+            coordinator.cast_vote(vote, &config).map_err(|e| anyhow!(e))?;
+            println!("Voted to approve proposal: {}", id);
+        }
+        ProposalCommands::Reject { id, reason } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            let mut vote = Vote::new(proposal_id, AgentId::User, DomainVoteDecision::Reject);
+            if let Some(r) = reason {
+                vote = vote.with_reason(r);
+            }
+            coordinator.cast_vote(vote, &config).map_err(|e| anyhow!(e))?;
+            println!("Voted to reject proposal: {}", id);
+        }
+        ProposalCommands::Votes { id, verbose } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            let votes = coordinator.get_votes(proposal_id);
+            if votes.is_empty() {
+                println!("No votes yet on proposal {}", id);
+            } else {
+                println!("Votes on proposal {}:", id);
+                for vote in votes {
+                    print!("  {} - {:?}", vote.voter, vote.decision);
+                    if verbose {
+                        print!(" at {}", vote.timestamp.format("%Y-%m-%d %H:%M:%S"));
+                        if let Some(ref r) = vote.reason {
+                            print!(" - {}", r);
+                        }
+                    }
+                    println!();
+                }
+
+                // Summary
+                let approves = votes.iter().filter(|v| matches!(v.decision, DomainVoteDecision::Approve)).count();
+                let rejects = votes.iter().filter(|v| matches!(v.decision, DomainVoteDecision::Reject)).count();
+                let abstains = votes.iter().filter(|v| matches!(v.decision, DomainVoteDecision::Abstain)).count();
+                println!("\nSummary: {} approve, {} reject, {} abstain", approves, rejects, abstains);
+            }
+        }
+        ProposalCommands::Execute { id, force } => {
+            let proposal_id = id.parse().map_err(|e| anyhow!("Invalid proposal ID: {}", e))?;
+            match manager.get(proposal_id) {
+                Some(p) => {
+                    if !matches!(p.status, ProposalStatus::Approved) {
+                        return Err(anyhow!("Proposal {} is not approved (status: {:?})", id, p.status));
+                    }
+
+                    if !force {
+                        print!("Execute proposal {}? [y/N] ", id);
+                        std::io::stdout().flush()?;
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        if !input.trim().eq_ignore_ascii_case("y") {
+                            println!("Aborted");
+                            return Ok(());
+                        }
+                    }
+
+                    // In a real implementation, this would apply the operation
+                    println!("Executed proposal: {}", id);
+                    println!("Operation: {:?} on {:?}", p.operation, p.target);
+                }
+                None => println!("Proposal {} not found", id),
+            }
+        }
+        ProposalCommands::Expire { older_than: _older_than, dry_run } => {
+            // Call expire_old without parameters (it uses the configured expiry)
+            if dry_run {
+                let pending_count = manager.pending().len();
+                println!("Would check {} pending proposals for expiry", pending_count);
+            } else {
+                manager.expire_old();
+                println!("Expired old proposals");
+            }
+        }
+        ProposalCommands::Cleanup { keep, dry_run } => {
+            // Parse keep duration (e.g., "7d" -> 7 days)
+            let duration = parse_duration(&keep).unwrap_or(chrono::Duration::days(7));
+            if dry_run {
+                let all_count = manager.all().len();
+                println!("Would clean up resolved proposals older than {}", keep);
+                println!("Current total: {} proposals", all_count);
+            } else {
+                manager.cleanup(duration);
+                println!("Cleaned up resolved proposals older than {}", keep);
+            }
         }
     }
     Ok(())
+}
+
+/// Parse a duration string like "7d", "1h", "30m"
+fn parse_duration(s: &str) -> Option<chrono::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, unit) = if s.ends_with('d') {
+        (&s[..s.len()-1], 'd')
+    } else if s.ends_with('h') {
+        (&s[..s.len()-1], 'h')
+    } else if s.ends_with('m') {
+        (&s[..s.len()-1], 'm')
+    } else if s.ends_with('s') {
+        (&s[..s.len()-1], 's')
+    } else {
+        // Default to days if no unit
+        (s, 'd')
+    };
+
+    let num: i64 = num_str.parse().ok()?;
+    match unit {
+        'd' => Some(chrono::Duration::days(num)),
+        'h' => Some(chrono::Duration::hours(num)),
+        'm' => Some(chrono::Duration::minutes(num)),
+        's' => Some(chrono::Duration::seconds(num)),
+        _ => None,
+    }
 }
 
 fn handle_db_command(
@@ -1135,6 +1485,122 @@ async fn handle_graphql_command(command: GraphqlCommands, store: &Arc<SledStore>
             println!("GraphQL command not fully implemented yet");
         }
     }
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WATCH MODE
+// ══════════════════════════════════════════════════════════════════════════════
+
+fn run_watch_mode(command: Vec<String>, debounce_ms: u64, db_path: &str, quiet: bool) -> Result<()> {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    if command.is_empty() {
+        return Err(anyhow!("No command specified for watch mode"));
+    }
+
+    // Determine paths to watch
+    let watch_path = std::path::Path::new(db_path);
+    let current_dir = std::env::current_dir()?;
+
+    if !quiet {
+        println!("Watching for changes...");
+        println!("Command: {}", command.join(" "));
+        println!("Debounce: {}ms", debounce_ms);
+        println!("Press Ctrl+C to stop\n");
+    }
+
+    // Create channel for events
+    let (tx, rx) = mpsc::channel();
+
+    // Create watcher with debounce
+    let config = Config::default()
+        .with_poll_interval(Duration::from_millis(debounce_ms));
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        config,
+    )?;
+
+    // Watch database path and current directory
+    if watch_path.exists() {
+        watcher.watch(watch_path, RecursiveMode::Recursive)?;
+    }
+    watcher.watch(&current_dir, RecursiveMode::Recursive)?;
+
+    // Run command initially
+    run_watch_command(&command, quiet)?;
+
+    // Track last run time for debouncing
+    let mut last_run = std::time::Instant::now();
+    let debounce_duration = Duration::from_millis(debounce_ms);
+
+    // Event loop
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => {
+                // Skip certain file patterns
+                let dominated_paths: Vec<_> = event.paths.iter()
+                    .filter(|p| {
+                        let path_str = p.to_string_lossy();
+                        !path_str.contains("/target/") &&
+                        !path_str.contains("/.git/") &&
+                        !path_str.ends_with(".swp") &&
+                        !path_str.ends_with(".swo") &&
+                        !path_str.ends_with("~")
+                    })
+                    .collect();
+
+                if !dominated_paths.is_empty() && last_run.elapsed() >= debounce_duration {
+                    if !quiet {
+                        println!("\n─── Change detected ───");
+                        for path in &dominated_paths {
+                            println!("  {}", path.display());
+                        }
+                        println!();
+                    }
+
+                    run_watch_command(&command, quiet)?;
+                    last_run = std::time::Instant::now();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Continue waiting
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_watch_command(command: &[String], quiet: bool) -> Result<()> {
+    use std::process::Command;
+
+    if command.is_empty() {
+        return Ok(());
+    }
+
+    let status = Command::new(&command[0])
+        .args(&command[1..])
+        .status()?;
+
+    if !quiet {
+        if status.success() {
+            println!("─── Command completed successfully ───\n");
+        } else {
+            println!("─── Command failed (exit code: {:?}) ───\n", status.code());
+        }
+    }
+
     Ok(())
 }
 

@@ -18,14 +18,14 @@ pub mod graphql;
 pub mod event;
 pub mod coordinator;
 
-pub use schema::{StateNode, StateEdge, StateEvent, NodeKind, EdgeKind, AgentId};
+pub use schema::{StateNode, StateEdge, StateEvent, NodeKind, EdgeKind, AgentId, Operation};
 pub use store::{SledStore, Store, StoreError};
 pub use store::{FullTextIndex, FuzzySearch, PandocConverter, OcrEngine};
 pub use graphql::{build_schema, StateSchema};
 pub use event::EventSourcer;
 pub use coordinator::{
     CapabilityMode, AgentCapabilities, CapabilityConfig,
-    Proposal, ProposalStatus, ProposalManager,
+    Proposal, ProposalStatus, ProposalManager, ProposalTarget,
     Vote, VoteDecision, VotingStrategy, VotingCoordinator,
     Reputation, ReputationTracker,
 };
