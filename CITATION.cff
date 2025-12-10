@@ -1,0 +1,29 @@
+# CITATION.cff - Citation File Format for elegant-STATE
+# https://citation-file-format.github.io/
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Palimpsest-0.5
+
+cff-version: 1.2.0
+title: "elegant-STATE"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: "Polymath"
+    given-names: "Hyper"
+    email: "hyperpolymath@proton.me"
+    affiliation: "Rhodium Standard / Independent Researcher"
+repository-code: "https://github.com/hyperpolymath/elegant-STATE"
+url: "https://rhodium.sh/projects/elegant-state"
+abstract: "MVP v0.1.0 complete and exceeds original scope
+Event replay and undo are stubs
+GraphQL subscriptions not implemented
+Semantic search requires embedding model
+API reference incomplete
+No user guide
+Error messages could be more helpful"
+keywords:
+  - RSR
+  - rhodium-standard
+license: "AGPL-3.0-or-later"
+license-url: "https://github.com/hyperpolymath/elegant-STATE/blob/main/LICENSE.txt"
+version: "0.1.0"
+date-released: "2025-12-10"
