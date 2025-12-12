@@ -193,7 +193,7 @@ async fn handle_serve_command(command: ServeCommands, store: Arc<SledStore>) -> 
                 .layer(Extension(schema));
 
             let addr = format!("{}:{}", host, port);
-            println!("GraphQL server running at http://{}/graphql", addr);
+            println!("GraphQL server running at https://{}/graphql", addr);
 
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             axum::serve(listener, app).await?;
