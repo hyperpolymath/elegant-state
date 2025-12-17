@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 name: Rust
 
 on:
@@ -6,16 +7,19 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions: read-all
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
     - name: Build
       run: cargo build --verbose
     - name: Run tests
