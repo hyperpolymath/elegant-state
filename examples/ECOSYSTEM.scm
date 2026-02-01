@@ -1,3 +1,4 @@
+;; SPDX-License-Identifier: PMPL-1.0-or-later
 ;;; ECOSYSTEM.scm --- hyperpolymath project ecosystem
 ;;; Format: Guile Scheme S-expressions
 ;;; Updated: 2025-12-09
